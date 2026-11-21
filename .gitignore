@@ -1,0 +1,8 @@
+/target/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.bin
+*.rpf
+*.dmp
+.DS_Store

@@ -1,0 +1,17 @@
+[package]
+name = "rage9-re"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Clean-room RAGE9 script.rpf (PSIN DOM & Serialised Object Graph) and anim.rpf (crClipDictionary / crAnimation / glTF 2.0) decoder and inspector"
+
+[lib]
+name = "rage9_re"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rage9-re"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1.0"
