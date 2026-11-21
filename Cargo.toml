@@ -3,7 +3,8 @@ name = "rage9-re"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Clean-room RAGE9 script.rpf (PSIN DOM & Serialised Object Graph) and anim.rpf (crClipDictionary / crAnimation / glTF 2.0) decoder and inspector"
+description = "Decoder and inspector for RAGE9 script.rpf and anim.rpf, with glTF 2.0 animation export"
+repository = "https://github.com/Ahmet-Dedeler/rage9-re"
 
 [lib]
 name = "rage9_re"
