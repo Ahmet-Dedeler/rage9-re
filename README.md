@@ -1,45 +1,53 @@
-# `rage9-re` — Clean-Room RAGE9 `script.rpf` & `anim.rpf` Decoder / Inspector
+# rage9-re
 
-**License:** `MIT OR Apache-2.0` (dual-licensed, clean-room implementation with **zero** game bytes or asset dumps committed).
+Rust and Python tools for two RAGE9 archive types: `script.rpf` (script data) and `anim.rpf` (animations), with a glTF 2.0 exporter for decoded clips. Written from scratch from observed file structure; no game code or data is included.
 
-`rage9-re` provides complete Rust and Python parsers, validators, disassemblers, and exporters for the two RAGE9 archives in GTA VI (`1.0.2.1`):
+**License:** `MIT OR Apache-2.0`. You need your own copy of the game files to run the inspectors.
 
-1. **`script.rpf` (4.35 MB — 1,057 / 1,057 zlib streams = 100.0% decoded):**
-   - **Nested RPF9 (`9FPR`) Container Scanner & 16-Byte-Aligned Zlib Carver/Stitcher**
-   - **RAGE9 `PSIN` (PSO v122) Full Schema & Block Decoder** (`PSIN -> LSCH -> LENM -> LSNS -> LGID -> LRSC -> CHKS`)
-   - **Compiled Binary-XML Script-Data DOM Tree Reconstructor** (`0xde396fe2` root struct, **1,012 / 1,012** files, **20,379** `dataNodes`, **63,288** typed `attributes`, **7,929** 3D `vectors`, **13,440** 64-bit hashes) with XML/JSON output
-   - **Serialised Object Graph Disassembler** (`2,702,384` B, **30,683 / 30,683** records, **10,294** `0x14` array records, **30,200** `0x71717171`-tagged pointers, **483** root object trees)
-2. **`anim.rpf` (4.4 GB — 100% of sampled `crClipDictionary` & `crAnimation` blocks decoded):**
-   - **`crClipDictionary`, `crClip`, `crAnimDictionary`, `crAnimation`, and `crAnimSequence` Parser**
-   - **All 7 Active RAGE9 Animation Channel Codecs:**
-     - `Class 0`: Static Quaternion (`3 × f32` -> `w = sqrt(1 - x² - y² - z²)`)
-     - `Class 1`: Static Vector3 (`3 × f32`)
-     - `Class 2`: Static Float (`1 × f32`)
-     - `Class 4`: Per-Frame Quantized Float (`12 B` header + LSB-first frame bitstream)
-     - `Class 5`: Indirect Quantized Float Lookup Table (`20 B + 4*w2` LUT + LSB-first frame index bits)
-     - `Class 7`: Reconstructed Quaternion Component (in-place insertion of `r = sqrt(1 - a² - b² - c²)` at component `k = slot & 3`)
-     - `Class 8`: 4-Component Quaternion Normalization (`q /= |q|`)
-     - `Class 10`: 64-Frame Superblock + 8-Lane SIMD Transposed 2nd-Order ZigZag Delta Curve (**21,084 / 21,084 = 100.0%** exact superblock bit-offset & anchor match!)
-   - **glTF 2.0 (`.glb`) & JSON Animation Exporter** with resolved humanoid biped bone names (`skel_root`, `skel_pelvis`, `skel_spine0..3`, `skel_l/r_hand`, `skel_l/r_foot`, `ik_*`, `ph_*`)
+## What works
 
-## Quick Start
+### `script.rpf`
 
-### Rust CLI & Tests
+- Scans the nested RPF9 (`9FPR`) containers and carves and stitches the 16-byte-aligned zlib streams (1,057 of 1,057 streams inflate).
+- Parses `PSIN` (PSO v122) containers: `PSIN -> LSCH -> LENM -> LSNS -> LGID -> LRSC -> CHKS`. All 1,012 files parse.
+- Rebuilds the compiled binary-XML script-data DOM (root struct `0xde396fe2`) and writes it out as XML or JSON.
+- Walks the serialised object graph in the first sub-archive (30,683 records, 483 root trees) and resolves its `0x71717171`-tagged pointers.
+
+### `anim.rpf`
+
+- Parses `crClipDictionary -> crClip -> crAnimation -> crAnimSequence`.
+- Decodes the channel classes seen in the archive: static quaternion / vector / float (0, 1, 2), per-frame quantized float (4), indexed quantized float (5), quaternion component reconstruction (7), quaternion normalization (8), and the 64-frame superblock 2nd-order zigzag delta curves (10).
+- Exports a clip as `.glb` for viewing in Blender or any glTF viewer.
+
+How it was checked: all 21,084 class-10 curves in the sampled windows land exactly on their superblock bit offsets and anchors. A sample exported clip moves smoothly, with a median rotation change of 0.85° per frame at 30 Hz.
+
+## Known gaps
+
+- The glTF exporter only maps a handful of named bones (`skel_root`, `skel_pelvis`, spine, hands, feet, `ik_*`, `ph_*`). The full skeleton hierarchy is not reconstructed yet.
+- A small fraction of frames show large jumps (1% of steps over 20°), so some channel or quantization edge case is likely still wrong.
+- `anim.rpf` is read in windows. Not every clip dictionary in the 4.4 GB archive has been decoded and checked.
+- Field names in the DOM come from hashes; most are not resolved to readable names.
+
+## Usage
+
+```bash
+cargo build --release
+./target/release/rage9-re inspect-script /path/to/script.rpf --dump-xml 0 --dump-objgraph 0
+./target/release/rage9-re inspect-anim /path/to/anim.rpf --export-glb out.glb
+```
+
+Python package: `python/rage9_re`.
+
+## Tests
 
 ```bash
 cargo test
-cargo run --release -- inspect-script /path/to/script.rpf --dump-xml 0 --dump-objgraph 0
-cargo run --release -- inspect-anim /path/to/anim.rpf --export-glb /tmp/rage9-re-work/sample.glb
-```
-
-### Python Tests
-
-```bash
-pytest -v
 python3 -m unittest discover -s tests -v
 ```
 
-## Specifications
+The tests use synthetic data built in the test files.
 
-- [`docs/SCRIPT_FORMAT.md`](docs/SCRIPT_FORMAT.md) — `script.rpf`, `PSIN` PSO v122, Compiled Binary-XML DOM Tree, and `0x71717171` Serialised Object Graph specification.
-- [`docs/ANIM_FORMAT.md`](docs/ANIM_FORMAT.md) — `anim.rpf`, `crClipDictionary`, `crAnimation`, and `crAnimSequence` (Classes 0, 1, 2, 4, 5, 7, 8, 10) specification.
+## Format notes
+
+- [`docs/SCRIPT_FORMAT.md`](docs/SCRIPT_FORMAT.md): `script.rpf`, `PSIN`, the binary-XML DOM and the object graph.
+- [`docs/ANIM_FORMAT.md`](docs/ANIM_FORMAT.md): `anim.rpf` and the `crAnimSequence` channel classes.
