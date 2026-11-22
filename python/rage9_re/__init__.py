@@ -1,4 +1,7 @@
+# rage9-re by Ahmet Dedeler (https://github.com/Ahmet-Dedeler, https://ahmetdedeler.com)
+# Source: https://github.com/Ahmet-Dedeler/rage9-re
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# If you copy, vendor or port this file, keep this header and credit rage9-re in your README.
 """
 Clean-room Python reference implementation of the RAGE9 decoder and inspector
 for `script.rpf` (`PSIN` PSO v122 DOM trees & `0x71717171` Serialised Object Graph)

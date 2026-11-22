@@ -1,4 +1,7 @@
+// rage9-re by Ahmet Dedeler (https://github.com/Ahmet-Dedeler, https://ahmetdedeler.com)
+// Source: https://github.com/Ahmet-Dedeler/rage9-re
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// If you copy, vendor or port this file, keep this header and credit rage9-re in your README.
 //! RAGE9 `script.rpf` decoders:
 //! 1. `PSIN` (PSO v122) container & schema parser (`PSIN -> LSCH -> LENM -> LSNS -> LGID -> LRSC -> CHKS`)
 //! 2. Compiled Binary-XML Script-Data DOM tree decoder (`0xde396fe2`) + XML/JSON reconstructor
