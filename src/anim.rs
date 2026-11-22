@@ -1,4 +1,7 @@
+// rage9-re by Ahmet Dedeler (https://github.com/Ahmet-Dedeler, https://ahmetdedeler.com)
+// Source: https://github.com/Ahmet-Dedeler/rage9-re
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// If you copy, vendor or port this file, keep this header and credit rage9-re in your README.
 //! RAGE9 `anim.rpf` decoder (`crClipDictionary`, `crClip`, `crAnimDictionary`,
 //! `crAnimation`, `crAnimSequence` channel codecs) and JSON / glTF 2.0 exporter.
 
