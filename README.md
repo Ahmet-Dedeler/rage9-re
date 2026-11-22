@@ -2,6 +2,12 @@
 
 Rust and Python tools for two RAGE9 archive types: `script.rpf` (script data) and `anim.rpf` (animations), with a glTF 2.0 exporter for decoded clips. Written from scratch from observed file structure; no game code or data is included.
 
+<p align="center">
+  <a href="https://discord.gg/reADpA6Cd"><img src="https://img.shields.io/badge/Join%20the%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord" height="36" /></a>
+  <br />
+  <sub>Questions, previews, bug reports and format research. Come say hi.</sub>
+</p>
+
 **License:** `MIT OR Apache-2.0`. You need your own copy of the game files to run the inspectors.
 
 ## What works
