@@ -51,3 +51,13 @@ The tests use synthetic data built in the test files.
 
 - [`docs/SCRIPT_FORMAT.md`](docs/SCRIPT_FORMAT.md): `script.rpf`, `PSIN`, the binary-XML DOM and the object graph.
 - [`docs/ANIM_FORMAT.md`](docs/ANIM_FORMAT.md): `anim.rpf` and the `crAnimSequence` channel classes.
+
+## Related projects
+
+- [Percy6Stars](https://github.com/Ahmet-Dedeler/Percy6Stars): RPF9/TTPF archive explorer for macOS and Windows
+- [awesome-gta6-reverse-engineering](https://github.com/Ahmet-Dedeler/awesome-gta6-reverse-engineering): every open-source GTA VI reverse engineering project in one list
+- [bcpack-rs](https://github.com/Ahmet-Dedeler/bcpack-rs): clean-room decoder for Xbox Series BCPack textures
+- [bink-player-mac](https://github.com/Ahmet-Dedeler/bink-player-mac): Bink 2 (`.bk2`) video player for macOS
+- [weather-study](https://github.com/Ahmet-Dedeler/weather-study): WebGL2 weather and timecycle visualizer
+
+Questions, previews and format research: [join the Discord](https://discord.gg/reADpA6Cd).
