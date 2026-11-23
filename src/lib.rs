@@ -292,7 +292,10 @@ mod tests {
             ],
             blocks: Vec::new(),
             track_frames: vec![
-                DecodedTrackFrames::Quaternions(vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.7071068, 0.0, 0.7071068]]),
+                DecodedTrackFrames::Quaternions(vec![
+                    [0.0, 0.0, 0.0, 1.0],
+                    [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2],
+                ]),
                 DecodedTrackFrames::Vectors(vec![[0.0, 0.0, 1.0], [0.1, 0.2, 1.0]]),
             ],
         };
@@ -303,5 +306,127 @@ mod tests {
             u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize,
             glb.len()
         );
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json_str = std::str::from_utf8(&glb[20..20 + json_len]).unwrap();
+        let bin_off = 20 + json_len + 8;
+        let last_t = f32::from_le_bytes(glb[bin_off + 4..bin_off + 8].try_into().unwrap());
+        assert!(
+            json_str.contains(&format!("\"max\":[{last_t}]")),
+            "JSON max must match exact BIN f32 {last_t}, got: {json_str}"
+        );
+    }
+
+    #[test]
+    fn test_script_tree_cycle_and_bool_xml() {
+        let tree = ScriptDataTree {
+            attributes: vec![ScriptAttribute {
+                name_hash: 0x1b60404d,
+                value_hash: 0,
+                raw_val: 1,
+                attr_type: 4,
+                is_valid: true,
+                value: ScriptAttrValue::Bool(true),
+            }],
+            vectors: Vec::new(),
+            u64_table: Vec::new(),
+            nodes: vec![
+                ScriptDataNode {
+                    name_hash: 0xc090afad,
+                    parent_index: 0xffff,
+                    child_index: 1,
+                    sibling_index: 0xffff,
+                    prev_sibling_index: 0xffff,
+                    attribute_start: 0,
+                    attribute_count: 1,
+                    is_valid: true,
+                },
+                ScriptDataNode {
+                    name_hash: 0x1aecde4d,
+                    parent_index: 0,
+                    child_index: 0, // cycle back to root
+                    sibling_index: 0xffff,
+                    prev_sibling_index: 0xffff,
+                    attribute_start: 0,
+                    attribute_count: 0,
+                    is_valid: true,
+                },
+            ],
+        };
+        let xml = tree.to_xml();
+        assert!(xml.contains("id=\"true\""));
+        assert!(xml.contains("</root>"));
+    }
+
+    #[test]
+    fn test_malformed_class5_div_zero_and_oob_rejected() {
+        // Build minimal block header with 1 Class-5 channel whose val_bits == 0
+        let mut blk = vec![0u8; 0x20 + 20 + 22 + 8];
+        blk[0x0c..0x10].copy_from_slice(&20u32.to_le_bytes()); // data_off = 20
+        let coff = 0x20 + 20;
+        let u10 = coff + 22 + 8;
+        blk[0x10..0x14].copy_from_slice(&(u10 as u32).to_le_bytes());
+        blk[0x16..0x18].copy_from_slice(&1u16.to_le_bytes()); // num_frames = 1
+        blk[0x18..0x1a].copy_from_slice(&0u16.to_le_bytes()); // frame_stride = 0
+        blk[0x1e] = 11; // 11 classes
+        // Class 5 descriptor: idx_bits=1, val_bits=0, lut_dwords=0
+        blk[0x20..0x24].copy_from_slice(&1u32.to_le_bytes());
+        blk[0x24..0x28].copy_from_slice(&0u32.to_le_bytes());
+        blk[0x28..0x2c].copy_from_slice(&0u32.to_le_bytes());
+        // class_counts[5] = 1
+        blk[coff + 5 * 2..coff + 5 * 2 + 2].copy_from_slice(&1u16.to_le_bytes());
+        // slot index 0
+        blk[coff + 22..coff + 24].copy_from_slice(&0u16.to_le_bytes());
+
+        let err = DecodedAnimBlock::parse(&blk, 0, 1).unwrap_err();
+        assert!(err.contains("val_bits"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn test_glb_dedup_escaping_and_nonfinite_duration() {
+        let anim = CrAnimation {
+            offset: 0,
+            hash: 1,
+            name: "pack:\\evil\"name\nline2".into(),
+            flags: 0,
+            num_frames: 2,
+            seq_frames: 2,
+            duration: f32::INFINITY,
+            signature: 0,
+            max_block_size: 0,
+            tracks: vec![
+                AnimTrackDesc {
+                    bone_id: 0,
+                    track_type: 0xf5c3a5b6, // generictranslation
+                    value_type: TrackValueType::Vector3,
+                    raw_value_type: 2,
+                },
+                AnimTrackDesc {
+                    bone_id: 0,
+                    track_type: 0xf791a95f, // bonetranslation (should win dedup)
+                    value_type: TrackValueType::Vector3,
+                    raw_value_type: 2,
+                },
+                AnimTrackDesc {
+                    bone_id: 0,
+                    track_type: 0x98e1750c,
+                    value_type: TrackValueType::Quaternion,
+                    raw_value_type: 0,
+                },
+            ],
+            blocks: Vec::new(),
+            track_frames: vec![
+                DecodedTrackFrames::Vectors(vec![[9.0, 9.0, 9.0], [9.0, 9.0, 9.0]]),
+                DecodedTrackFrames::Vectors(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+                DecodedTrackFrames::Quaternions(vec![[0.0, 0.0, 0.0, 0.0], [f32::NAN, 0.0, 0.0, 1.0]]),
+            ],
+        };
+        let glb = export_cr_animation_to_glb(&anim).expect("export glb");
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json_str = std::str::from_utf8(&glb[20..20 + json_len]).unwrap();
+        assert!(json_str.contains(r#"pack:\\evil\"name\nline2"#));
+        assert!(!json_str.contains("inf"));
+        // Only 2 channels (1 translation + 1 rotation), no duplicate translation
+        assert_eq!(json_str.matches("\"path\":\"translation\"").count(), 1);
+        assert_eq!(json_str.matches("\"path\":\"rotation\"").count(), 1);
     }
 }

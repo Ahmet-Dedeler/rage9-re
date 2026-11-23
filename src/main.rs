@@ -23,7 +23,9 @@ fn cmd_inspect_script(path: &str, dump_xml_idx: Option<usize>, dump_og_root: Opt
         );
     }
 
-    let start_off = headers.first().map_or(0, |h| h.toc_end as usize);
+    let start_off = headers
+        .first()
+        .map_or(0, |h| h.offset.saturating_add(h.toc_end as usize));
     let streams = carve_zlib_streams(&data, start_off);
     let entries = stitch_streams(&streams);
     println!(
@@ -42,26 +44,35 @@ fn cmd_inspect_script(path: &str, dump_xml_idx: Option<usize>, dump_og_root: Opt
 
     for (idx, e) in entries.iter().enumerate() {
         match e.kind {
-            EntryKind::ObjectGraph => {
-                let og = ObjectGraph::parse(&e.data).expect("Failed to parse ObjectGraph");
-                let arr_cnt = og.records.iter().filter(|r| r.array_info.is_some()).count();
-                println!(
-                    "  [Entry #{idx} @ 0x{:06x}] Serialised ObjectGraph: {} B ({} streams), {} records, {} arrays, {} pointers, {} root trees",
-                    e.offset,
-                    e.data.len(),
-                    e.stream_count,
-                    og.records.len(),
-                    arr_cnt,
-                    og.total_pointers,
-                    og.root_indices.len()
-                );
-                if let Some(ri) = dump_og_root {
-                    if let Some(&rec_idx) = og.root_indices.get(ri) {
-                        println!("\n--- Disassembly of ObjectGraph Root #{ri} (rec#{rec_idx}) ---");
-                        print!("{}", og.disassemble_tree(rec_idx, 4));
+            EntryKind::ObjectGraph => match ObjectGraph::parse(&e.data) {
+                Ok(og) => {
+                    let arr_cnt = og.records.iter().filter(|r| r.array_info.is_some()).count();
+                    println!(
+                        "  [Entry #{idx} @ 0x{:06x}] Serialised ObjectGraph: {} B ({} streams), {} records, {} arrays, {} pointers, {} root trees",
+                        e.offset,
+                        e.data.len(),
+                        e.stream_count,
+                        og.records.len(),
+                        arr_cnt,
+                        og.total_pointers,
+                        og.root_indices.len()
+                    );
+                    if let Some(ri) = dump_og_root {
+                        if let Some(&rec_idx) = og.root_indices.get(ri) {
+                            println!(
+                                "\n--- Disassembly of ObjectGraph Root #{ri} (rec#{rec_idx}) ---"
+                            );
+                            print!("{}", og.disassemble_tree(rec_idx, 4));
+                        }
                     }
                 }
-            }
+                Err(err) => {
+                    eprintln!(
+                        "  [Entry #{idx} @ 0x{:06x}] ObjectGraph parse error: {err}",
+                        e.offset
+                    );
+                }
+            },
             EntryKind::Psin => {
                 psin_total += 1;
                 if let Ok(doc) = PsinDocument::parse(&e.data) {
@@ -103,15 +114,42 @@ fn cmd_inspect_script(path: &str, dump_xml_idx: Option<usize>, dump_og_root: Opt
 }
 
 fn cmd_inspect_anim(path: &str, export_glb_out: Option<&str>) {
-    let mut f = fs::File::open(path).expect("Failed to open anim file");
-    let file_len = f.metadata().unwrap().len() as usize;
+    let mut f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) => {
+            eprintln!("Failed to open {path}: {err}");
+            std::process::exit(1);
+        }
+    };
+    let file_len = match f.metadata() {
+        Ok(m) => m.len(),
+        Err(err) => {
+            eprintln!("Failed to stat {path}: {err}");
+            std::process::exit(1);
+        }
+    };
     let mut head = [0u8; 0x40];
-    f.read_exact(&mut head).unwrap();
+    if file_len < 0x40 || f.read_exact(&mut head).is_err() {
+        eprintln!("File {path} is shorter than 64 bytes ({file_len} bytes)");
+        std::process::exit(1);
+    }
 
     if &head[0..4] != b"9FPR" {
         // Direct carved CrClipDictionary binary
-        let data = fs::read(path).unwrap();
-        let cd = CrClipDictionary::parse(&data).expect("Failed to parse CrClipDictionary");
+        let data = match fs::read(path) {
+            Ok(d) => d,
+            Err(err) => {
+                eprintln!("Failed to read {path}: {err}");
+                std::process::exit(1);
+            }
+        };
+        let cd = match CrClipDictionary::parse(&data) {
+            Ok(cd) => cd,
+            Err(err) => {
+                eprintln!("Failed to parse CrClipDictionary: {err}");
+                std::process::exit(1);
+            }
+        };
         println!(
             "Parsed CrClipDictionary '{}': {} clips, {} animations",
             cd.name,
@@ -119,28 +157,44 @@ fn cmd_inspect_anim(path: &str, export_glb_out: Option<&str>) {
             cd.animations.len()
         );
         if let Some(out_path) = export_glb_out {
-            let glb = cd.export_animation_glb(0).expect("Failed to export GLB");
-            fs::write(out_path, &glb).expect("Failed to write GLB");
-            println!("Exported glTF 2.0 binary ({} bytes) to {out_path}", glb.len());
+            match cd.export_animation_glb(0) {
+                Ok(glb) => {
+                    if let Err(err) = fs::write(out_path, &glb) {
+                        eprintln!("Failed to write GLB to {out_path}: {err}");
+                        std::process::exit(1);
+                    }
+                    println!("Exported glTF 2.0 binary ({} bytes) to {out_path}", glb.len());
+                }
+                Err(err) => {
+                    eprintln!("Failed to export GLB: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
         return;
     }
 
-    let hdr = Rpf9Header::parse_at(&head, 0).expect("Invalid RPF9 header");
+    let hdr = match Rpf9Header::parse_at(&head, 0) {
+        Some(h) => h,
+        None => {
+            eprintln!("Invalid RPF9 header in {path}");
+            std::process::exit(1);
+        }
+    };
     println!("=== RAGE9 anim.rpf Windowed Inspector ===");
     println!(
         "File: {path} ({} bytes) | toc_end=0x{:x} entries={} key_id=0x{:08x}",
         file_len, hdr.toc_end, hdr.entry_count, hdr.key_id
     );
 
-    let win_offsets: [usize; 5] = [
-        ((hdr.toc_end as usize) + 0xfff) & !0xfff,
+    let win_offsets: [u64; 5] = [
+        ((hdr.toc_end as u64) + 0xfff) & !0xfff,
         0x2000_0000,
         0x4000_0000,
         0x8000_0000,
         0xc000_0000,
     ];
-    let win_size = 4 * 1024 * 1024;
+    let win_size: u64 = 4 * 1024 * 1024;
 
     let mut total_clip_dicts = 0usize;
     let mut total_clips = 0usize;
@@ -155,23 +209,23 @@ fn cmd_inspect_anim(path: &str, export_glb_out: Option<&str>) {
         if woff >= file_len {
             continue;
         }
-        let read_len = win_size.min(file_len - woff);
+        let read_len = win_size.min(file_len - woff) as usize;
         let mut buf = vec![0u8; read_len];
-        f.seek(SeekFrom::Start(woff as u64)).unwrap();
-        f.read_exact(&mut buf).unwrap();
-
-        let mut streams = carve_zlib_streams(&buf, 0);
-        for s in &mut streams {
-            s.offset += woff;
+        if let Err(err) = f.seek(SeekFrom::Start(woff)).and_then(|_| f.read_exact(&mut buf)) {
+            eprintln!("Failed to read window @ 0x{woff:09x}: {err}");
+            continue;
         }
+
+        let streams = carve_zlib_streams(&buf, 0);
         let entries = stitch_streams(&streams);
         let mut win_cd = 0usize;
         let mut win_0drp = 0usize;
 
         for e in &entries {
+            let abs_off = woff + (e.offset as u64);
             match e.kind {
                 EntryKind::Meta0Drp => win_0drp += 1,
-                EntryKind::ClipDictionary if (e.offset & 0xfff) == 0x10 => {
+                EntryKind::ClipDictionary if (abs_off & 0xfff) == 0x10 => {
                     let pmap_off = (u64::from_le_bytes(e.data[8..16].try_into().unwrap())
                         & 0x0fff_ffff) as usize;
                     if e.data.len() <= pmap_off {
@@ -204,15 +258,28 @@ fn cmd_inspect_anim(path: &str, export_glb_out: Option<&str>) {
                         }
                         if !exported {
                             if let Some(out_path) = export_glb_out {
-                                if !cd.animations.is_empty() {
-                                    let glb = cd.export_animation_glb(0).unwrap();
-                                    fs::write(out_path, &glb).unwrap();
-                                    println!(
-                                        "Exported '{}' ({} B glTF 2.0 .glb) to {out_path}",
-                                        cd.animations[0].name,
-                                        glb.len()
-                                    );
-                                    exported = true;
+                                for ai in 0..cd.animations.len() {
+                                    match cd.export_animation_glb(ai) {
+                                        Ok(glb) => {
+                                            if let Err(err) = fs::write(out_path, &glb) {
+                                                eprintln!("Failed to write GLB to {out_path}: {err}");
+                                                std::process::exit(1);
+                                            }
+                                            println!(
+                                                "Exported '{}' ({} B glTF 2.0 .glb) to {out_path}",
+                                                cd.animations[ai].name,
+                                                glb.len()
+                                            );
+                                            exported = true;
+                                            break;
+                                        }
+                                        Err(err) => {
+                                            eprintln!(
+                                                "Skipping animation '{}' export: {err}",
+                                                cd.animations[ai].name
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -234,6 +301,33 @@ fn cmd_inspect_anim(path: &str, export_glb_out: Option<&str>) {
     println!(
         "Verified {total_c10} Class-10 superblock curves | {total_quats} unit quaternions (max ||q|-1| = {max_quat_err:.2e})"
     );
+    if let Some(out_path) = export_glb_out {
+        if !exported {
+            eprintln!("Warning: no exportable animations found; did not write {out_path}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn require_flag_value<'a>(args: &'a [String], i: usize, flag: &str) -> &'a str {
+    match args.get(i + 1) {
+        Some(v) => v.as_str(),
+        None => {
+            eprintln!("Missing value for {flag}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn parse_usize_flag(args: &[String], i: usize, flag: &str) -> usize {
+    let raw = require_flag_value(args, i, flag);
+    match raw.parse::<usize>() {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("Invalid integer for {flag}: {raw}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -251,13 +345,21 @@ fn main() {
             let mut dump_xml = None;
             let mut dump_og = None;
             let mut i = 3;
-            while i + 1 < args.len() {
+            while i < args.len() {
                 match args[i].as_str() {
-                    "--dump-xml" => dump_xml = args[i + 1].parse().ok(),
-                    "--dump-objgraph" => dump_og = args[i + 1].parse().ok(),
-                    _ => {}
+                    "--dump-xml" => {
+                        dump_xml = Some(parse_usize_flag(&args, i, "--dump-xml"));
+                        i += 2;
+                    }
+                    "--dump-objgraph" => {
+                        dump_og = Some(parse_usize_flag(&args, i, "--dump-objgraph"));
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("Unknown flag for inspect-script: {other}");
+                        std::process::exit(1);
+                    }
                 }
-                i += 2;
             }
             cmd_inspect_script(path, dump_xml, dump_og);
         }
@@ -265,11 +367,17 @@ fn main() {
             let path = &args[2];
             let mut export_glb = None;
             let mut i = 3;
-            while i + 1 < args.len() {
-                if args[i] == "--export-glb" {
-                    export_glb = Some(args[i + 1].as_str());
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--export-glb" => {
+                        export_glb = Some(require_flag_value(&args, i, "--export-glb"));
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("Unknown flag for inspect-anim: {other}");
+                        std::process::exit(1);
+                    }
                 }
-                i += 2;
             }
             cmd_inspect_anim(path, export_glb);
         }

@@ -28,7 +28,8 @@ impl Rpf9Header {
     pub const MAGIC: &'static [u8; 4] = b"9FPR";
 
     pub fn parse_at(data: &[u8], offset: usize) -> Option<Self> {
-        if offset + 0x40 > data.len() || &data[offset..offset + 4] != Self::MAGIC {
+        let end = offset.checked_add(0x40)?;
+        if end > data.len() || &data[offset..offset + 4] != Self::MAGIC {
             return None;
         }
         let u32_at = |o: usize| {
@@ -122,7 +123,7 @@ pub fn is_zlib_header(b: &[u8]) -> bool {
     if (flg & 0x20) != 0 {
         return false;
     }
-    ((cmf << 8) | flg) % 31 == 0
+    ((cmf << 8) | flg).is_multiple_of(31)
 }
 
 pub fn try_decompress_zlib(src: &[u8], max_out: usize) -> Option<(Vec<u8>, usize)> {
@@ -167,8 +168,10 @@ pub fn try_decompress_zlib(src: &[u8], max_out: usize) -> Option<(Vec<u8>, usize
 
 pub fn carve_zlib_streams(data: &[u8], start_offset: usize) -> Vec<CarvedZlibStream> {
     let mut streams = Vec::new();
-    let mut pos = (start_offset + 15) & !15;
-    while pos + 6 <= data.len() {
+    let Some(mut pos) = start_offset.checked_add(15).map(|v| v & !15) else {
+        return streams;
+    };
+    while pos.checked_add(6).is_some_and(|e| e <= data.len()) {
         if is_zlib_header(&data[pos..]) {
             if let Some((out, consumed)) = try_decompress_zlib(&data[pos..], 64 * 1024 * 1024) {
                 streams.push(CarvedZlibStream {
@@ -176,11 +179,21 @@ pub fn carve_zlib_streams(data: &[u8], start_offset: usize) -> Vec<CarvedZlibStr
                     compressed_len: consumed,
                     data: out,
                 });
-                pos = (pos + consumed + 15) & !15;
+                let Some(next) = pos
+                    .checked_add(consumed)
+                    .and_then(|v| v.checked_add(15))
+                    .map(|v| v & !15)
+                else {
+                    break;
+                };
+                pos = next;
                 continue;
             }
         }
-        pos += 16;
+        let Some(next) = pos.checked_add(16) else {
+            break;
+        };
+        pos = next;
     }
     streams
 }
@@ -194,9 +207,14 @@ pub fn classify_payload(buf: &[u8]) -> EntryKind {
         && u32::from_le_bytes([buf[0x14], buf[0x15], buf[0x16], buf[0x17]]) > 0
         && buf[0x18..0x28] == [0u8; 0x10]
     {
-        let cnt = u32::from_le_bytes([buf[0x14], buf[0x15], buf[0x16], buf[0x17]]) as usize;
-        let first_off = u64::from_le_bytes(buf[0x28..0x30].try_into().unwrap()) as usize;
-        if first_off == ((0x28 + cnt * 8 + 15) & !15) {
+        let cnt = u32::from_le_bytes([buf[0x14], buf[0x15], buf[0x16], buf[0x17]]) as u64;
+        let first_off = u64::from_le_bytes(buf[0x28..0x30].try_into().unwrap());
+        let expected_first = cnt
+            .checked_mul(8)
+            .and_then(|b| 0x28u64.checked_add(b))
+            .and_then(|b| b.checked_add(15))
+            .map(|b| b & !15);
+        if expected_first == Some(first_off) {
             return EntryKind::ObjectGraph;
         }
     }
@@ -235,15 +253,18 @@ pub fn stitch_streams(streams: &[CarvedZlibStream]) -> Vec<StitchedEntry> {
         while j < streams.len() {
             let prev = &streams[j - 1];
             let cur = &streams[j];
-            let prev_end = (prev.offset + prev.compressed_len + 15) & !15;
+            let Some(prev_end) = prev
+                .offset
+                .checked_add(prev.compressed_len)
+                .and_then(|v| v.checked_add(15))
+                .map(|v| v & !15)
+            else {
+                break;
+            };
             if cur.offset != prev_end {
                 break;
             }
-            if prev.data.len() == 65536 {
-                combined.extend_from_slice(&cur.data);
-                count += 1;
-                j += 1;
-            } else if is_resource && (cur.offset & 0xfff) != 0x10 {
+            if prev.data.len() == 65536 || (is_resource && (cur.offset & 0xfff) != 0x10) {
                 combined.extend_from_slice(&cur.data);
                 count += 1;
                 j += 1;

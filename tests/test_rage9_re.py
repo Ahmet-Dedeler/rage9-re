@@ -152,6 +152,63 @@ class TestRage9ReSynthetic(unittest.TestCase):
         self.assertEqual(json_tag, 0x4E4F534A)
         gdict = json.loads(glb[20 : 20 + json_len].decode("utf-8"))
         self.assertEqual(gdict["nodes"][0]["name"], "skel_pelvis")
+        # Accessor 0 max must exactly match the packed f32 timestamp in the BIN chunk
+        bin_off = 20 + json_len + 8
+        last_t = struct.unpack_from("<f", glb, bin_off + 4)[0]
+        self.assertEqual(gdict["accessors"][0]["max"][0], last_t)
+
+    def test_xml_bool_parity_and_cycle_guard(self) -> None:
+        tree = r9.ScriptDataTree(
+            attributes=[
+                {"name_hash": 0x1B60404D, "name": "id", "value_hash": 0, "type": 4, "value": True, "valid": True}
+            ],
+            vectors=[],
+            u64_table=[],
+            nodes=[
+                {"name_hash": 0xC090AFAD, "name": "root", "parent": 0xFFFF, "child": 1, "sibling": 0xFFFF, "prev_sibling": 0xFFFF, "attr_start": 0, "attr_count": 1, "valid": True},
+                {"name_hash": 0x1AECDE4D, "name": "tag", "parent": 0, "child": 0, "sibling": 0xFFFF, "prev_sibling": 0xFFFF, "attr_start": 0, "attr_count": 0, "valid": True},
+            ],
+        )
+        xml = tree.to_xml()
+        self.assertIn('id="true"', xml)
+        self.assertIn("</root>", xml)
+
+    def test_malformed_inputs_and_glb_dedup(self) -> None:
+        # Block index 0 must raise ValueError, not read blocks[-1]
+        doc = r9.PsinDocument(0, 0x7A, [], [], [(0xDE396FE2, 0x50, b"\x00" * 0x50)], (0, 0, 0), b"", b"", 0, 0, b"zppp")
+        with self.assertRaises(ValueError):
+            r9.ScriptDataTree.from_psin(doc)
+
+        # Class 5 val_bits == 0 must raise ValueError, not ZeroDivisionError
+        blk = bytearray(0x20 + 20 + 22 + 8)
+        coff = 0x20 + 20
+        u10 = coff + 22 + 8
+        struct.pack_into("<I", blk, 0x0C, 20)
+        struct.pack_into("<I", blk, 0x10, u10)
+        struct.pack_into("<H", blk, 0x16, 1)
+        blk[0x1E] = 11
+        struct.pack_into("<III", blk, 0x20, 1, 0, 0)
+        struct.pack_into("<H", blk, coff + 5 * 2, 1)
+        with self.assertRaises(ValueError):
+            r9.decode_anim_block(bytes(blk), 0, 1)
+
+        # Duplicate (node, path) channels deduplicated & infinite duration handled
+        glb = r9.export_animation_glb(
+            "dedup",
+            2,
+            float("inf"),
+            [
+                {"bone_id": 0, "track_type": 0xF5C3A5B6, "value_type": 2, "frames": [[9, 9, 9], [9, 9, 9]]},
+                {"bone_id": 0, "track_type": 0xF791A95F, "value_type": 2, "frames": [[1, 2, 3], [4, 5, 6]]},
+            ],
+        )
+        json_len = struct.unpack_from("<I", glb, 12)[0]
+        gdict = json.loads(glb[20 : 20 + json_len].decode("utf-8"))
+        self.assertEqual(len(gdict["animations"][0]["channels"]), 1)
+
+        # 0 frames must raise ValueError
+        with self.assertRaises(ValueError):
+            r9.export_animation_glb("empty", 0, 1.0, [])
 
 
 if __name__ == "__main__":

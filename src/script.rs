@@ -67,8 +67,8 @@ pub struct PsinDocument {
 }
 
 #[inline]
-fn align16(x: usize) -> usize {
-    (x + 15) & !15
+fn align16(x: usize) -> Option<usize> {
+    x.checked_add(15).map(|v| v & !15)
 }
 
 #[inline]
@@ -109,11 +109,14 @@ impl PsinDocument {
                 return Err(format!("Invalid section tag at 0x{pos:x}"));
             }
             let sz = u32_be(buf, pos + 4) as usize;
-            if sz < 8 || pos + sz > buf.len() {
+            let end = pos
+                .checked_add(sz)
+                .ok_or_else(|| format!("Section {tag:?} length overflow at 0x{pos:x}"))?;
+            if sz < 8 || end > buf.len() {
                 return Err(format!("Section {tag:?} length {sz} out of bounds at 0x{pos:x}"));
             }
-            secs.insert(tag, &buf[pos + 8..pos + sz]);
-            pos += sz;
+            secs.insert(tag, &buf[pos + 8..end]);
+            pos = end;
         }
         if pos != buf.len() {
             return Err(format!("PSIN section walk ended at {pos}, file len {}", buf.len()));
@@ -130,7 +133,10 @@ impl PsinDocument {
         let n_blocks = u16_le(lrsc, 0x3c) as usize;
 
         let lsch = secs.get(b"LSCH").ok_or("Missing LSCH section")?;
-        if lsch.len() < n_structs * 32 {
+        let struct_hdr_bytes = n_structs
+            .checked_mul(32)
+            .ok_or_else(|| "LSCH struct header size overflow".to_string())?;
+        if lsch.len() < struct_hdr_bytes {
             return Err("LSCH section too short for struct headers".into());
         }
         let mut raw_structs = Vec::with_capacity(n_structs);
@@ -142,14 +148,19 @@ impl PsinDocument {
             let flags = u32_le(lsch, spos + 8);
             let size = u32_le(lsch, spos + 24);
             let nmemb = u16_le(lsch, spos + 30) as usize;
-            total_members += nmemb;
+            total_members = total_members
+                .checked_add(nmemb)
+                .ok_or_else(|| "LSCH member count overflow".to_string())?;
             raw_structs.push((name_hash, signature, flags, size, nmemb));
             spos += 32;
         }
-        if spos + total_members * 16 != lsch.len() {
+        let expected_lsch = total_members
+            .checked_mul(16)
+            .and_then(|m| spos.checked_add(m))
+            .ok_or_else(|| "LSCH total length overflow".to_string())?;
+        if expected_lsch != lsch.len() {
             return Err(format!(
-                "LSCH length mismatch: expected {}, got {}",
-                spos + total_members * 16,
+                "LSCH length mismatch: expected {expected_lsch}, got {}",
                 lsch.len()
             ));
         }
@@ -177,7 +188,10 @@ impl PsinDocument {
         }
 
         let lenm = secs.get(b"LENM").ok_or("Missing LENM section")?;
-        if lenm.len() < n_enums * 24 {
+        let enum_hdr_bytes = n_enums
+            .checked_mul(24)
+            .ok_or_else(|| "LENM header size overflow".to_string())?;
+        if lenm.len() < enum_hdr_bytes {
             return Err("LENM section too short".into());
         }
         let mut raw_enums = Vec::with_capacity(n_enums);
@@ -191,7 +205,11 @@ impl PsinDocument {
         }
         let mut enums = Vec::with_capacity(n_enums);
         for (name_hash, signature, count) in raw_enums {
-            if epos + count * 16 > lenm.len() {
+            let need = count
+                .checked_mul(16)
+                .and_then(|bytes| epos.checked_add(bytes))
+                .ok_or_else(|| "LENM enum values overflow".to_string())?;
+            if need > lenm.len() {
                 return Err("LENM enum values overflow".into());
             }
             let mut values = Vec::with_capacity(count);
@@ -210,7 +228,10 @@ impl PsinDocument {
         }
 
         let psin = secs.get(b"PSIN").ok_or("Missing PSIN section")?;
-        if psin.len() < n_blocks * 16 {
+        let blk_tbl_bytes = n_blocks
+            .checked_mul(16)
+            .ok_or_else(|| "PSIN block table size overflow".to_string())?;
+        if psin.len() < blk_tbl_bytes {
             return Err("PSIN block table overflow".into());
         }
         let mut block_headers = Vec::with_capacity(n_blocks);
@@ -219,21 +240,30 @@ impl PsinDocument {
             let bsize = u32_le(psin, bi * 16 + 4);
             block_headers.push((btype, bsize));
         }
-        let mut cur_file_off = align16(8 + n_blocks * 16);
+        let mut cur_file_off = 8usize
+            .checked_add(blk_tbl_bytes)
+            .and_then(align16)
+            .ok_or_else(|| "PSIN block table alignment overflow".to_string())?;
         let mut blocks = Vec::with_capacity(n_blocks);
         for (idx0, (btype, bsize)) in block_headers.into_iter().enumerate() {
             let rel = cur_file_off - 8;
             let bsz = bsize as usize;
-            if rel + bsz > psin.len() {
+            let rel_end = rel
+                .checked_add(bsz)
+                .ok_or_else(|| format!("PSIN block {} size overflow", idx0 + 1))?;
+            if rel_end > psin.len() {
                 return Err(format!("PSIN block {} payload overflow", idx0 + 1));
             }
             blocks.push(PsoInstanceBlock {
                 index_1based: idx0 + 1,
                 type_hash: btype,
                 byte_size: bsize,
-                data: psin[rel..rel + bsz].to_vec(),
+                data: psin[rel..rel_end].to_vec(),
             });
-            cur_file_off = align16(cur_file_off + bsz);
+            cur_file_off = cur_file_off
+                .checked_add(bsz)
+                .and_then(align16)
+                .ok_or_else(|| format!("PSIN block {} offset overflow", idx0 + 1))?;
         }
         if cur_file_off - 8 != psin.len() {
             return Err(format!(
@@ -349,49 +379,65 @@ impl ScriptDataTree {
             ));
         }
 
-        let decode_arr_ref = |off: usize| -> (usize, usize, usize) {
+        let decode_arr_ref = |off: usize| -> Result<(usize, usize, usize), String> {
             let cnt = u32_le(&root_blk.data, off) as usize;
             let r = u64_le(&root_blk.data, off + 8);
             let bidx = (r & 0xfff) as usize;
-            let boff = (r >> 20) as usize;
-            (cnt, bidx, boff)
+            let boff = usize::try_from(r >> 20)
+                .map_err(|_| "Array reference block offset overflow".to_string())?;
+            Ok((cnt, bidx, boff))
         };
 
-        let (n_attrs, b_attrs, o_attrs) = decode_arr_ref(0x00);
-        let (_n_strs, _b_strs, _o_strs) = decode_arr_ref(0x10);
-        let (n_vecs, b_vecs, o_vecs) = decode_arr_ref(0x20);
-        let (n_u64s, b_u64s, o_u64s) = decode_arr_ref(0x30);
-        let (n_nodes, b_nodes, o_nodes) = decode_arr_ref(0x40);
+        let (n_attrs, b_attrs, o_attrs) = decode_arr_ref(0x00)?;
+        let (_n_strs, _b_strs, _o_strs) = decode_arr_ref(0x10)?;
+        let (n_vecs, b_vecs, o_vecs) = decode_arr_ref(0x20)?;
+        let (n_u64s, b_u64s, o_u64s) = decode_arr_ref(0x30)?;
+        let (n_nodes, b_nodes, o_nodes) = decode_arr_ref(0x40)?;
 
-        let mut vectors = Vec::with_capacity(n_vecs);
+        let mut vectors = Vec::new();
         if n_vecs > 0 {
             let blk = &doc.blocks.get(b_vecs.wrapping_sub(1)).ok_or("Invalid vec block")?.data;
-            if o_vecs + n_vecs * 12 > blk.len() {
+            let end = n_vecs
+                .checked_mul(12)
+                .and_then(|sz| o_vecs.checked_add(sz))
+                .ok_or_else(|| "Vector array bounds overflow".to_string())?;
+            if end > blk.len() {
                 return Err("Vector array out of bounds".into());
             }
+            vectors.reserve_exact(n_vecs);
             for i in 0..n_vecs {
                 let p = o_vecs + i * 12;
                 vectors.push([f32_le(blk, p), f32_le(blk, p + 4), f32_le(blk, p + 8)]);
             }
         }
 
-        let mut u64_table = Vec::with_capacity(n_u64s);
+        let mut u64_table = Vec::new();
         if n_u64s > 0 {
             let blk = &doc.blocks.get(b_u64s.wrapping_sub(1)).ok_or("Invalid u64 block")?.data;
-            if o_u64s + n_u64s * 8 > blk.len() {
+            let end = n_u64s
+                .checked_mul(8)
+                .and_then(|sz| o_u64s.checked_add(sz))
+                .ok_or_else(|| "u64 array bounds overflow".to_string())?;
+            if end > blk.len() {
                 return Err("u64 array out of bounds".into());
             }
+            u64_table.reserve_exact(n_u64s);
             for i in 0..n_u64s {
                 u64_table.push(u64_le(blk, o_u64s + i * 8));
             }
         }
 
-        let mut attributes = Vec::with_capacity(n_attrs);
+        let mut attributes = Vec::new();
         if n_attrs > 0 {
             let blk = &doc.blocks.get(b_attrs.wrapping_sub(1)).ok_or("Invalid attr block")?.data;
-            if o_attrs + n_attrs * 16 > blk.len() {
+            let end = n_attrs
+                .checked_mul(16)
+                .and_then(|sz| o_attrs.checked_add(sz))
+                .ok_or_else(|| "Attribute array bounds overflow".to_string())?;
+            if end > blk.len() {
                 return Err("Attribute array out of bounds".into());
             }
+            attributes.reserve_exact(n_attrs);
             for i in 0..n_attrs {
                 let p = o_attrs + i * 16;
                 let name_hash = u32_le(blk, p);
@@ -431,12 +477,17 @@ impl ScriptDataTree {
             }
         }
 
-        let mut nodes = Vec::with_capacity(n_nodes);
+        let mut nodes = Vec::new();
         if n_nodes > 0 {
             let blk = &doc.blocks.get(b_nodes.wrapping_sub(1)).ok_or("Invalid node block")?.data;
-            if o_nodes + n_nodes * 16 > blk.len() {
+            let end = n_nodes
+                .checked_mul(16)
+                .and_then(|sz| o_nodes.checked_add(sz))
+                .ok_or_else(|| "Node array bounds overflow".to_string())?;
+            if end > blk.len() {
                 return Err("Node array out of bounds".into());
             }
+            nodes.reserve_exact(n_nodes);
             for i in 0..n_nodes {
                 let p = o_nodes + i * 16;
                 let node = ScriptDataNode {
@@ -479,14 +530,16 @@ impl ScriptDataTree {
         if self.nodes.is_empty() {
             return out;
         }
-        self.write_node_xml(0, 0, &mut out);
+        let mut visited = vec![false; self.nodes.len()];
+        self.write_node_xml(0, 0, &mut visited, &mut out);
         out
     }
 
-    fn write_node_xml(&self, idx: usize, depth: usize, out: &mut String) {
-        if idx >= self.nodes.len() {
+    fn write_node_xml(&self, idx: usize, depth: usize, visited: &mut [bool], out: &mut String) {
+        if idx >= self.nodes.len() || visited[idx] {
             return;
         }
+        visited[idx] = true;
         let node = &self.nodes[idx];
         let indent = "  ".repeat(depth);
         let tag_name = resolve_known_hash(node.name_hash)
@@ -518,7 +571,7 @@ impl ScriptDataTree {
             let mut ch = node.child_index;
             let mut guard = 0usize;
             while ch != 0xffff && (ch as usize) < self.nodes.len() && guard < self.nodes.len() {
-                self.write_node_xml(ch as usize, depth + 1, out);
+                self.write_node_xml(ch as usize, depth + 1, visited, out);
                 ch = self.nodes[ch as usize].sibling_index;
                 guard += 1;
             }
@@ -554,17 +607,23 @@ impl ObjectGraph {
             return Err("ObjectGraph buffer too short".into());
         }
         let rec_count = u32_le(buf, 0x14) as usize;
-        if rec_count == 0 || 0x28 + rec_count * 8 > buf.len() {
+        let tbl_end = rec_count
+            .checked_mul(8)
+            .and_then(|bytes| 0x28usize.checked_add(bytes))
+            .ok_or_else(|| "ObjectGraph record table overflow".to_string())?;
+        if rec_count == 0 || tbl_end > buf.len() {
             return Err("Invalid ObjectGraph record count".into());
         }
+        let expected_first = align16(tbl_end)
+            .ok_or_else(|| "ObjectGraph table alignment overflow".to_string())?;
         let mut offsets = Vec::with_capacity(rec_count);
         let mut off_to_idx = HashMap::with_capacity(rec_count);
         for i in 0..rec_count {
-            let off = u64_le(buf, 0x28 + i * 8) as usize;
-            if i == 0 && off != align16(0x28 + rec_count * 8) {
+            let off = usize::try_from(u64_le(buf, 0x28 + i * 8))
+                .map_err(|_| "ObjectGraph record offset overflow".to_string())?;
+            if i == 0 && off != expected_first {
                 return Err(format!(
-                    "First record offset 0x{off:x} != aligned table end 0x{:x}",
-                    align16(0x28 + rec_count * 8)
+                    "First record offset 0x{off:x} != aligned table end 0x{expected_first:x}"
                 ));
             }
             if (off & 15) != 0 || off >= buf.len() {
@@ -598,7 +657,11 @@ impl ObjectGraph {
                 let cnt = u32_le(buf, off + 0x10);
                 let cnt2 = u32_le(buf, off + 0x14);
                 let stride = u32_le(buf, off + 0x18);
-                if cnt != cnt2 || align16(0x30 + (cnt as usize) * (stride as usize)) != sz {
+                let expected_sz = (cnt as usize)
+                    .checked_mul(stride as usize)
+                    .and_then(|bytes| 0x30usize.checked_add(bytes))
+                    .and_then(align16);
+                if cnt != cnt2 || expected_sz != Some(sz) {
                     return Err(format!("Array record {i} size mismatch"));
                 }
                 Some((cnt, stride))
