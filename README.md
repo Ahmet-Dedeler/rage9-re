@@ -3,7 +3,7 @@
 Rust and Python tools for two RAGE9 archive types: `script.rpf` (script data) and `anim.rpf` (animations), with a glTF 2.0 exporter for decoded clips. Written from scratch from observed file structure; no game code or data is included.
 
 <p align="center">
-  <a href="https://discord.gg/reADpA6Cd"><img src="https://img.shields.io/badge/Join%20the%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord" height="36" /></a>
+  <a href="https://discord.gg/CjcDBg3nf"><img src="https://img.shields.io/badge/Join%20the%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord" height="36" /></a>
   <br />
   <sub>Questions, previews, bug reports and format research. Come say hi.</sub>
 </p>
@@ -66,4 +66,4 @@ The tests use synthetic data built in the test files.
 - [bink-player-mac](https://github.com/Ahmet-Dedeler/bink-player-mac): Bink 2 (`.bk2`) video player for macOS
 - [weather-study](https://github.com/Ahmet-Dedeler/weather-study): WebGL2 weather and timecycle visualizer
 
-Questions, previews and format research: [join the Discord](https://discord.gg/reADpA6Cd).
+Questions, previews and format research: [join the Discord](https://discord.gg/CjcDBg3nf).
